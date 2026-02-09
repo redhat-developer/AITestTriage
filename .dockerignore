@@ -30,9 +30,12 @@ temp/
 
 # Documentation
 README.md
-*.md
+CLAUDE.md
 
 # Test files
 tests/
 test_*
-*_test.py 
+*_test.py
+
+# Local data
+chroma_db/

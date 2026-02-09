@@ -7,7 +7,7 @@ class StorageClient:
     
     def __init__(self):
         self.client = storage.Client.create_anonymous_client()
-        self.bucket = self.client.bucket(settings.GCS_BUCKET_NAME)
+        self.bucket = self.client.bucket(settings.gcs_bucket_name)
     
     def get_text_from_blob(self, prefix: str) -> str:
         """Get text content from a blob."""

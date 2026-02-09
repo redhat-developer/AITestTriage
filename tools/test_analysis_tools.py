@@ -1,11 +1,9 @@
 import io
 import xml.etree.ElementTree as ET
-from typing import List
 from langchain_core.tools import tool
 from PIL import Image
-import google.generativeai as genai
+from google import genai
 from jira import JIRA
-import os
 from utils.storage import storage_client
 from config.settings import settings
 
@@ -15,18 +13,18 @@ from chromadb.config import Settings
 import json
 
 @tool
-def get_failed_testsuites(xml_file_prefix: str):
+def parse_junit_failures(xml_file_path: str):
     """
-    Get test suites from junit xml with failures.
-    
+    Parse a JUnit XML file and return only the failed test suites.
+
     Args:
-        xml_file_prefix (str): Path to XML file
-        
+        xml_file_path (str): Path to the JUnit XML file in GCS.
+
     Returns:
-        str: XML string of failed testsuites
+        str: XML string of failed test suites with system-out stripped.
     """
     try:
-        root = ET.fromstring(storage_client.get_text_from_blob(xml_file_prefix))
+        root = ET.fromstring(storage_client.get_text_from_blob(xml_file_path))
         testsuites = [root] if root.tag == 'testsuite' else root.findall('testsuite')
         failed_testsuites = []
         for testsuite in testsuites:
@@ -42,26 +40,26 @@ def get_failed_testsuites(xml_file_prefix: str):
         return f"Error getting failed testsuites: {e}"
 
 @tool
-def analyze_screenshot_visual_confirmation(image_path: str, test_failure_analysis_text: str, test_title: str, junit_xml_failure: str):
-    """Analyze a screenshot image along with provided test failure analysis text to give a visual confirmation or insights from the image.
+def analyze_screenshot(image_path: str, test_failure_analysis_text: str, test_title: str, junit_xml_failure: str):
+    """Analyze a test failure screenshot (or error context if no screenshot) and return a root cause analysis.
     Args:
-        image_path (str): The file path to the screenshot image.
-        test_failure_analysis_text (str): The test failure analysis text.
+        image_path (str): GCS path to the screenshot image.
+        test_failure_analysis_text (str): Summary of the test failure context.
         test_title (str): The title of the test.
-        junit_xml_failure (str): full Test failure/Error from the <failure> tag in the JUnit XML.
+        junit_xml_failure (str): Full failure/error text from the JUnit XML <failure> tag.
     Returns:
-        str: The root cause analysis and screenshot analysis.
+        str: A 2-3 sentence root cause analysis paragraph.
     """
     try:
-        model = genai.GenerativeModel(settings.GEMINI_MODEL_NAME) 
-        
+        client = _get_genai_client()
+
         try:
             image_data = storage_client.get_bytes_from_blob(image_path)
             image_stream = io.BytesIO(image_data)
             image = Image.open(image_stream)
         except Exception as e:
             image = None
-        
+
         prompt_with_image = f"""
 **Objective:** Analyze the screenshot and provide a comprehensive Root Cause Analysis that will be used directly in a markdown report.
 
@@ -111,64 +109,34 @@ def analyze_screenshot_visual_confirmation(image_path: str, test_failure_analysi
 - Do NOT include section labels like "Visual Evidence:" or "Conclusion:"
 - Focus on error message interpretation and test context analysis
 """
-        response = model.generate_content([prompt_with_image, image] if image else prompt_without_image)
+        response = client.models.generate_content(
+            model=settings.screenshot_model_name,
+            contents=[prompt_with_image, image] if image else prompt_without_image,
+        )
         return response.text
     except Exception as e:
         return f"Error during screenshot analysis: {str(e)}"
 
 @tool
-def get_text_from_file(file_path: str):
-    """Get the text from a file from the given file path and return the text.
+def read_file(file_path: str):
+    """Read a file from GCS and return its text content.
     Args:
-        file_path (str): The path of the file to get the text from.
+        file_path (str): GCS path to the file.
     Returns:
-        str: The text of the file.
+        str: The text content of the file.
     """
-    return storage_client.get_text_from_blob(file_path)
-
-@tool
-def get_folder_structure(prefix: str):
-    """Get the tree/folder structure output from the given prefix and return the tree output.
-    Args:
-        prefix (str): The prefix of the folder to get the structure of.
-    Returns:
-        str: The tree/folder structure output.
-    """
-    print("get_folder_structure:" + prefix)
     try:
-        blob_names = storage_client.list_blobs(prefix)
-        rel_paths = []
-        for path in blob_names:
-            rel_path = path[len(prefix):].strip('/')
-            if rel_path:
-                rel_paths.append(rel_path)
-        
-        rel_paths.sort()
-        
-        seen_dirs = set()
-        tree_output = []
-        for path in rel_paths:
-            parts = path.split('/')
-            for level, part in enumerate(parts):
-                current_path = '/'.join(parts[:level+1])
-                if current_path not in seen_dirs:
-                    seen_dirs.add(current_path)
-                    indent = "  " * level  # 2 spaces per level
-                    if level == len(parts) - 1:
-                        tree_output.append(f"{indent}{part}")
-                    else:
-                        tree_output.append(f"{indent}{part}/")
-        return '\n'.join(tree_output)
+        return storage_client.get_text_from_blob(file_path)
     except Exception as e:
-        return f"Error getting folder structure: {e}"
+        return f"Error reading file: {e}"
 
 @tool
-def get_immediate_directories(prefix: str):
-    """Get immediate subdirectory names from a given prefix path (only first level, not recursive).
+def list_directories(prefix: str):
+    """List immediate subdirectory names at a given path (first level only, not recursive).
     Args:
-        prefix (str): The prefix path to search for immediate subdirectories.
+        prefix (str): GCS path to list subdirectories from.
     Returns:
-        str: Comma-separated list of immediate directory names or error message.
+        str: Comma-separated list of directory names.
     """
     try:
         directories = storage_client.get_immediate_directories(prefix)
@@ -179,12 +147,12 @@ def get_immediate_directories(prefix: str):
         return f"Error getting immediate directories: {e}"
 
 @tool
-def get_immediate_files(prefix: str):
-    """Get immediate file names from a given prefix path (only first level, not in subdirectories).
+def list_files(prefix: str):
+    """List immediate file names at a given path (first level only, not in subdirectories).
     Args:
-        prefix (str): The prefix path to search for immediate files.
+        prefix (str): GCS path to list files from.
     Returns:
-        str: Comma-separated list of immediate file names or error message.
+        str: Comma-separated list of file names.
     """
     try:
         files = storage_client.get_immediate_files(prefix)
@@ -195,10 +163,10 @@ def get_immediate_files(prefix: str):
         return f"Error getting immediate files: {e}"
 
 @tool
-def check_file_exists(file_path: str):
-    """Check if a file exists at the given path.
+def file_exists(file_path: str):
+    """Check if a file exists at the given GCS path.
     Args:
-        file_path (str): The file path to check.
+        file_path (str): GCS path to check.
     Returns:
         str: "exists" or "not found"
     """
@@ -209,31 +177,12 @@ def check_file_exists(file_path: str):
         return f"Error checking file existence: {e}"
 
 @tool
-def get_texts_from_files(file_paths: List[str]):
-    """Get the text from a list of files from the given file paths and return the text.
+def read_log_files(prefix: str):
+    """Read and concatenate all .log files at the given path (first level only).
     Args:
-        file_paths (List[str]): The list of file paths to get the text of.
+        prefix (str): GCS path to search for .log files.
     Returns:
-        List[str]: The list of text of the files.
-    """
-    try:
-        contents = []
-        for file_path in file_paths:
-            try:
-                contents.append(storage_client.get_text_from_blob(file_path))
-            except Exception as e:
-                contents.append(f"Error reading file {file_path}: {e}")
-        return contents
-    except Exception as e:
-        return f"Error getting texts from files: {e}"
-
-@tool
-def get_immediate_log_files_content(prefix: str):
-    """Get the concatenated content of all immediate .log files from the given prefix.
-    Args:
-        prefix (str): The prefix path to search for immediate .log files.
-    Returns:
-        str: The concatenated content of all .log files with file names as headers.
+        str: Concatenated content of all .log files with file names as headers.
     """
     try:
         # Get all immediate files from the prefix
@@ -290,8 +239,11 @@ def create_jira_bug(
         str: Success message with ticket key and url or error message
     """
     try:
+        if not settings.jira_create_enabled:
+            return "JIRA issue creation is disabled (JIRA_CREATE_ENABLED=false). Skipping."
+
         # Check for JIRA_PAT first
-        jira_pat = os.getenv("JIRA_PAT")
+        jira_pat = settings.jira_pat
         if not jira_pat:
             return "Error: JIRA_PAT environment variable is not set. Please configure your Jira Personal Access Token."
 
@@ -312,24 +264,23 @@ def create_jira_bug(
             truncation_note = ""
 
         jira_client = JIRA(
-            server="https://issues.redhat.com/",
+            server=settings.jira_server_url,
             token_auth=jira_pat
         )
 
-        # RHDHBUGS requires summary field on creation
         # Build the initial issue dict with required fields
         issue_dict = {
-            'project': {'key': 'RHDHBUGS'},
+            'project': {'key': settings.jira_project_key},
             'issuetype': {'name': 'Bug'},
             'summary': summary.strip(),
-            'versions': [{'name': '1.9.0'}]  # Affects Version/s - required field
+            'versions': [{'name': settings.jira_affects_version}],
         }
 
         # Add description if provided
         if description and description.strip():
             issue_dict['description'] = description.strip()
 
-        print(f"Creating JIRA issue in RHDHBUGS project...")
+        print(f"Creating JIRA issue in {settings.jira_project_key} project...")
         new_issue = jira_client.create_issue(fields=issue_dict)
         print(f"✓ Issue created: {new_issue.key}")
 
@@ -338,8 +289,9 @@ def create_jira_bug(
 
         # Try to add labels separately (this is optional)
         try:
-            print(f"Adding labels 'ci-fail' and 'AITestTriage' to issue {new_issue.key}...")
-            new_issue.update(fields={'labels': ['ci-fail', 'AITestTriage']})
+            labels = [l.strip() for l in settings.jira_labels.split(",")]
+            print(f"Adding labels {labels} to issue {new_issue.key}...")
+            new_issue.update(fields={'labels': labels})
             print(f"✓ Successfully added labels")
         except Exception as e:
             error_msg = str(e)
@@ -441,11 +393,14 @@ def update_jira_bug(
         str: Success message with ticket key and url or error message
     """
     try:
+        if not settings.jira_update_enabled:
+            return "JIRA issue updates are disabled (JIRA_UPDATE_ENABLED=false). Skipping."
+
         jira_client = JIRA(
-            server="https://issues.redhat.com/",
-            token_auth=os.getenv("JIRA_PAT")
+            server=settings.jira_server_url,
+            token_auth=settings.jira_pat
         )
-        
+
         # Get the issue to verify it exists
         issue = jira_client.issue(ticket_key)
         
@@ -528,24 +483,28 @@ def update_jira_bug(
 _chroma_client = None
 _embedding_model_name = None
 _jira_collection = None
+_genai_client = None
+
+def _get_genai_client():
+    """Lazy initialization of the Google GenAI client."""
+    global _genai_client
+    if _genai_client is None:
+        _genai_client = genai.Client(api_key=settings.google_api_key)
+    return _genai_client
 
 def _get_chroma_resources():
     """Lazy initialization of ChromaDB and embedding model."""
     global _chroma_client, _embedding_model_name, _jira_collection
 
     if _chroma_client is None:
-        chroma_persist_dir = os.getenv("CHROMA_PERSIST_DIR", settings.chroma_db_dir)
+        chroma_persist_dir = settings.chroma_db_dir
         _chroma_client = chromadb.PersistentClient(
             path=chroma_persist_dir,
             settings=Settings(anonymized_telemetry=False)
         )
 
     if _embedding_model_name is None:
-        # Initialize Google API if not already configured
-        google_api_key = os.getenv("GOOGLE_API_KEY")
-        if google_api_key:
-            genai.configure(api_key=google_api_key)
-        _embedding_model_name = os.getenv("EMBEDDING_MODEL", "models/text-embedding-004")
+        _embedding_model_name = settings.embedding_model
 
     if _jira_collection is None:
         _jira_collection = _chroma_client.get_or_create_collection(
@@ -614,12 +573,12 @@ def search_similar_jira_issues(
         search_query = "\n".join(search_components)
 
         # Generate embedding for the search query using Google's API
-        result = genai.embed_content(
+        client = _get_genai_client()
+        result = client.models.embed_content(
             model=embedding_model_name,
-            content=search_query,
-            task_type="retrieval_query"
+            contents=search_query,
         )
-        query_embedding = result['embedding']
+        query_embedding = result.embeddings[0].values
 
         # Search for similar issues - fetch more than needed to allow for filtering and prioritization
         results = collection.query(
@@ -745,14 +704,14 @@ URL: {metadata.get('url', 'N/A')}
         return f"Error searching for similar Jira issues: {str(e)}"
 
 TOOLS = [
-    get_text_from_file,
-    get_failed_testsuites,
-    analyze_screenshot_visual_confirmation,
-    get_immediate_log_files_content,
-    get_folder_structure,
-    get_immediate_directories,
-    get_immediate_files,
-    check_file_exists,
+    read_file,
+    parse_junit_failures,
+    analyze_screenshot,
+    read_log_files,
+    list_directories,
+    list_files,
+    file_exists,
     create_jira_bug,
+    update_jira_bug,
     search_similar_jira_issues,
 ]

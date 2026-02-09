@@ -82,7 +82,7 @@ profile_default/
 ipython_config.py
 
 # pyenv
-.python-version
+# .python-version  # Tracked for uv
 
 # pipenv
 #   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
@@ -130,7 +130,7 @@ dmypy.json
 
 # Project-specific files
 graph.png
-full_conversation_log.txt
+full_conversation_log*.txt
 conversation_*.pkl
 
 # IDE files
@@ -159,4 +159,4 @@ __pycache__/
 *.pyzwz
 *.pyzwzw
 
-k8s/
+CHANGELOG.MD

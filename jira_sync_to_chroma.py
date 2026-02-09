@@ -14,7 +14,7 @@ from typing import List, Dict
 from jira import JIRA
 import chromadb
 from chromadb.config import Settings
-import google.generativeai as genai
+from google import genai
 import argparse
 import json
 import re
@@ -23,10 +23,10 @@ from config.settings import settings
 
 class JiraChromaSync:
     def __init__(self,
-                 jira_server: str = "https://issues.redhat.com/",
+                 jira_server: str = None,
                  jira_token: str = None,
-                 chroma_persist_directory: str = settings.chroma_db_dir,
-                 embedding_model: str = "models/text-embedding-004"):
+                 chroma_persist_directory: str = None,
+                 embedding_model: str = None):
         """
         Initialize Jira to ChromaDB sync.
 
@@ -40,11 +40,15 @@ class JiraChromaSync:
         if not self.jira_token:
             raise ValueError("JIRA_PAT environment variable not set")
 
-        # Initialize Google API
+        jira_server = jira_server or settings.jira_server_url
+        chroma_persist_directory = chroma_persist_directory or settings.chroma_db_dir
+        embedding_model = embedding_model or settings.embedding_model
+
+        # Initialize Google GenAI client
         google_api_key = os.getenv("GOOGLE_API_KEY")
         if not google_api_key:
             raise ValueError("GOOGLE_API_KEY environment variable not set")
-        genai.configure(api_key=google_api_key)
+        self.genai_client = genai.Client(api_key=google_api_key)
 
         # Initialize Jira client
         self.jira_client = JIRA(
@@ -278,12 +282,11 @@ class JiraChromaSync:
             
             # Generate embeddings using Google's API (batch request)
             print(f"Generating embeddings for batch {i//batch_size + 1}...")
-            result = genai.embed_content(
+            result = self.genai_client.models.embed_content(
                 model=self.embedding_model_name,
-                content=documents,
-                task_type="retrieval_document"
+                contents=documents,
             )
-            embeddings = result['embedding']
+            embeddings = [e.values for e in result.embeddings]
 
             # Upsert to ChromaDB (updates if exists, inserts if new)
             self.collection.upsert(
@@ -311,13 +314,13 @@ def main():
     parser = argparse.ArgumentParser(description="Sync Jira issues to ChromaDB")
     parser.add_argument(
         "--project",
-        default="RHDHBUGS",
-        help="Jira project key (default: RHDHBUGS)"
+        default=settings.jira_project_key,
+        help=f"Jira project key (default: {settings.jira_project_key})"
     )
     parser.add_argument(
         "--chroma-dir",
         default=settings.chroma_db_dir,
-        help="ChromaDB persistence directory (default: ./chroma_db)"
+        help=f"ChromaDB persistence directory (default: {settings.chroma_db_dir})"
     )
     parser.add_argument(
         "--max-results",
@@ -327,8 +330,8 @@ def main():
     )
     parser.add_argument(
         "--embedding-model",
-        default="models/text-embedding-004",
-        help="Google embedding model (default: models/text-embedding-004)"
+        default=settings.embedding_model,
+        help=f"Google embedding model (default: {settings.embedding_model})"
     )
     
     args = parser.parse_args()

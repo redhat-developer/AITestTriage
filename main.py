@@ -4,9 +4,14 @@
 import sys; sys.dont_write_bytecode = True
 
 import sys
+import logging
 import argparse
+from config.settings import settings
 from interfaces.cli import start_cli
 from interfaces.slack_bot import SlackBot
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def main():
     """Main entry point for the test analysis agent."""
@@ -28,6 +33,10 @@ Examples:
     
     args = parser.parse_args()
     
+    logger.info(f"LLM model: {settings.gemini_model_name}")
+    logger.info(f"Screenshot model: {settings.screenshot_model_name}")
+    logger.info(f"Embedding model: {settings.embedding_model}")
+
     try:
         if args.interface == 'cli':
             print("Starting Test Analysis Agent - CLI Interface")
