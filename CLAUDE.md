@@ -36,7 +36,8 @@ podman push quay.io/skhileri/test-triage:latest
 ## Required Environment Variables
 
 - `GOOGLE_API_KEY` — Google AI API key for Gemini model (required)
-- `JIRA_PAT` — JIRA Personal Access Token for bug creation/search
+- `JIRA_USER_EMAIL` — JIRA Cloud user email for authentication
+- `JIRA_API_TOKEN` — JIRA Cloud API token for authentication
 - `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` — For Slack bot mode
 - `CHROMA_DB_DIR` — ChromaDB persistence directory (default: `./chroma_db`, in prod: `/app/data/chroma_db`)
 - `EMBEDDING_MODEL` — Google embedding model (default: `gemini-embedding-001`)

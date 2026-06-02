@@ -1,39 +1,38 @@
 from typing import List, Optional
 from utils.storage import storage_client
+from config.settings import settings
 
 
 # =============================================================================
 # CONSTANTS - Output format templates and rules
 # =============================================================================
 
-TEST_CASE_FORMAT = """*[Number]. Test Case: [Full Test Case Name]*
+JIRA_BROWSE_URL = settings.jira_server_url.rstrip("/") + "/browse"
+
+TEST_CASE_FORMAT = f"""*[Number]. Test Case: [Full Test Case Name]*
 
 • *Failure Message:* `[Exact error message from JUnit XML]`
-• *Root Cause Analysis:* [Insert the exact output from analyze_screenshot — a 2-3 sentence paragraph starting with "The root cause is..."]
-• *Actionable Recommendations:*
-  1. [First specific, actionable fix]
-  2. [Second specific, actionable fix - if applicable]
+• *Root Cause Analysis:* [Insert the exact output from analyze_screenshot — a 1-2 sentence paragraph]
+• *Suggested Fix:* [One concise, actionable fix]
 • *Similar Jira Issues:* [max 2 issues, open issues prioritized]
-  - [🔴 or 🟢] *<https://issues.redhat.com/browse/ISSUE-KEY|ISSUE-KEY>:* "[Issue summary]" - [Brief relevance explanation]"""
+  - [🔴 or 🟢] *<{JIRA_BROWSE_URL}/ISSUE-KEY|ISSUE-KEY>:* "[Issue summary]" - [Brief relevance explanation]"""
 
-CI_FAILURE_FORMAT = """*[Number]. Issue Type: [CI Failure/Build Failure/Pod Log Issue]*
+CI_FAILURE_FORMAT = f"""*[Number]. Issue Type: [CI Failure/Build Failure/Pod Log Issue]*
 
 • *Issue Description:* [One sentence summary of the problem]
 • *Failure Details:* [Key error messages and symptoms — use backticks for error text]
-• *Root Cause Analysis:* [Detailed analysis based on logs — identify the specific cause]
-• *Actionable Recommendations:*
-  1. [First specific, actionable fix]
-  2. [Second specific, actionable fix - if applicable]
+• *Root Cause Analysis:* [1-2 sentence analysis identifying the specific cause]
+• *Suggested Fix:* [One concise, actionable fix]
 • *Similar Jira Issues:* [max 2 issues, open issues prioritized]
-  - [🔴 or 🟢] *<https://issues.redhat.com/browse/ISSUE-KEY|ISSUE-KEY>:* "[Issue summary]" - [Brief relevance explanation]"""
+  - [🔴 or 🟢] *<{JIRA_BROWSE_URL}/ISSUE-KEY|ISSUE-KEY>:* "[Issue summary]" - [Brief relevance explanation]"""
 
-FORMATTING_RULES = """**Formatting Rules:**
+FORMATTING_RULES = f"""**Formatting Rules:**
 1. Use Slack mrkdwn: `*bold*`, backticks for code, `•` for bullets, `-` for sub-items
 2. The output from `analyze_screenshot` is a complete paragraph — insert it directly after "Root Cause Analysis:" without modification
 3. For "Similar Jira Issues": you MUST call `search_similar_jira_issues` first, then format results. NEVER invent Jira issue IDs.
-4. Format Jira links as: *<https://issues.redhat.com/browse/ISSUE-KEY|ISSUE-KEY>:* "[Summary]"
+4. Format Jira links as: *<{JIRA_BROWSE_URL}/ISSUE-KEY|ISSUE-KEY>:* "[Summary]"
 5. If `search_similar_jira_issues` returns no results, write: "No similar Jira issues found in the database."
-6. Keep recommendations concise — maximum 2 actionable items"""
+6. "Suggested Fix" must be a single concise sentence — no numbered lists"""
 
 
 class E2ETestAnalysisBuilder:
@@ -76,6 +75,7 @@ class E2ETestAnalysisBuilder:
 
     def _build_step_registry_failure_prompt(self, e2e_job_dir: str) -> str:
         """Build prompt when the CI job failed before reaching the test step."""
+        main_build_log = f"{self.base_dir}/build-log.txt"
         all_step_dirs = storage_client.get_immediate_directories(f"{self.base_dir}/artifacts/{e2e_job_dir}/")
         step_log_paths = []
         for step_dir in all_step_dirs:
@@ -92,13 +92,16 @@ Prow link: {prow_link}
 
 The CI job failed during the step registry phase — tests never ran.
 
+Main build log (CI orchestrator): `{main_build_log}`
+
 Step directories with build logs:
 {step_list}
 
 **Analysis Strategy:**
-1. Read each build log (`read_file`) to identify which step failed and why
-2. For each failure, search for similar JIRA issues (`search_similar_jira_issues`)
-3. Report using the CI failure format below
+1. **ALWAYS read the main build log first** using `read_file("{main_build_log}")` — this contains the orchestration-level root cause (pod failures, resource errors, scheduling issues)
+2. Read step build logs only if needed for additional detail
+3. For each failure, search for similar JIRA issues (`search_similar_jira_issues`)
+4. Report using the CI failure format below
 
 {CI_FAILURE_FORMAT}
 

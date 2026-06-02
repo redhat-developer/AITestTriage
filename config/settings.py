@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     """Configuration settings for the test analysis agent."""
 
     # Models
-    gemini_model_name: str = "gemini-3-pro-preview"
+    gemini_model_name: str = "gemini-2.5-pro"
     screenshot_model_name: Optional[str] = "gemini-2.5-pro"
     embedding_model: str = "gemini-embedding-001"
 
@@ -21,14 +21,15 @@ class Settings(BaseSettings):
     # Google Cloud Storage
     gcs_bucket_name: str = "test-platform-results"
 
-    # JIRA
-    jira_server_url: str = "https://issues.redhat.com/"
+    # JIRA (Atlassian Cloud)
+    jira_server_url: str = "https://redhat.atlassian.net"
     jira_project_key: str = "RHDHBUGS"
     jira_affects_version: str = "1.9.0"
     jira_labels: str = "ci-fail,AITestTriage"
     jira_create_enabled: bool = True
-    jira_update_enabled: bool = True
-    jira_pat: Optional[str] = None
+    jira_update_enabled: bool = False
+    jira_user_email: Optional[str] = None
+    jira_api_token: Optional[str] = None
 
     # API Keys
     google_api_key: Optional[str] = None

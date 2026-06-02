@@ -48,7 +48,7 @@ def analyze_screenshot(image_path: str, test_failure_analysis_text: str, test_ti
         test_title (str): The title of the test.
         junit_xml_failure (str): Full failure/error text from the JUnit XML <failure> tag.
     Returns:
-        str: A 2-3 sentence root cause analysis paragraph.
+        str: A 1-2 sentence root cause analysis paragraph.
     """
     try:
         client = _get_genai_client()
@@ -61,7 +61,7 @@ def analyze_screenshot(image_path: str, test_failure_analysis_text: str, test_ti
             image = None
 
         prompt_with_image = f"""
-**Objective:** Analyze the screenshot and provide a comprehensive Root Cause Analysis that will be used directly in a markdown report.
+**Objective:** Analyze the screenshot and provide a concise Root Cause Analysis that will be used directly in a markdown report.
 
 **Test Context:**
 - Test Name: {test_title}
@@ -70,24 +70,22 @@ def analyze_screenshot(image_path: str, test_failure_analysis_text: str, test_ti
 
 **CRITICAL: Return your analysis in EXACTLY this format (this will be inserted directly into the report):**
 
-[2-3 comprehensive sentences that combine the root cause statement with visual evidence. First sentence should identify the root cause clearly (e.g., "The root cause is..."). Following sentences should describe what the screenshot shows and how it correlates to the failure, providing technical details about UI elements, states, and context.]
+[1-2 sentences: First sentence directly states what went wrong. Second sentence (if needed) briefly states what the screenshot shows as evidence.]
 
 **Example Format:**
-"The root cause is that the test is using an incorrect or outdated data-testid selector to locate the 'Overview' tab, leading to a timeout even though the element is visually present. The screenshot shows the Red Hat Developer Hub application displaying a user's profile page, where the 'Overview' tab is clearly visible and selected as the active tab in the main content area."
+"The test uses an incorrect data-testid selector to locate the 'Overview' tab, causing a timeout even though the element is visually present on the page."
 
 **Requirements:**
-- Write 2-3 comprehensive sentences as a single flowing paragraph
-- First sentence MUST start with "The root cause is..." and identify the specific technical issue
-- Following sentences should describe observable facts from the screenshot (UI state, visible elements, error messages, page state, anomalies)
-- Be specific about UI elements, their states, positions, and any visible context
-- Explain the correlation between what's visible and why the test failed
-- Use complete sentences in paragraph form, not bullet points or separate sections
+- Write 1-2 concise sentences as a single paragraph — be brief and direct
+- Do NOT start with "The root cause is" — the label already provides that context
+- First sentence should directly describe the technical issue
+- Only add a second sentence if essential to reference key visual evidence
 - Do NOT use markdown headers (##), bold text (**), or emojis in your response
 - Do NOT include section labels like "Visual Evidence:" or "Conclusion:"
 """
 
         prompt_without_image = f"""
-**Objective:** Analyze the test failure and provide a comprehensive Root Cause Analysis when no screenshot is available.
+**Objective:** Analyze the test failure and provide a concise Root Cause Analysis when no screenshot is available.
 
 **Test Context:**
 - Test Name: {test_title}
@@ -96,18 +94,15 @@ def analyze_screenshot(image_path: str, test_failure_analysis_text: str, test_ti
 
 **CRITICAL: Return your analysis in EXACTLY this format (this will be inserted directly into the report):**
 
-[2-3 comprehensive sentences that combine the root cause statement with error analysis. First sentence should identify the root cause clearly (e.g., "The root cause is..."). Following sentences should analyze the error message, stack trace, and test context to explain what likely happened during test execution and why the failure occurred.]
+[1-2 sentences: First sentence directly states what went wrong. Second sentence (if needed) briefly explains the key error evidence.]
 
 **Requirements:**
-- Write 2-3 comprehensive sentences as a single flowing paragraph
-- First sentence MUST start with "The root cause is..." and identify the specific technical issue
-- Following sentences should analyze the error message, stack trace patterns, timing issues, element state issues, or other technical factors
-- Be specific and technical in explaining the chain of events or conditions that led to the failure
-- Explain what the test was attempting to do and why it failed based on the error evidence
-- Use complete sentences in paragraph form, not bullet points or separate sections
+- Write 1-2 concise sentences as a single paragraph — be brief and direct
+- Do NOT start with "The root cause is" — the label already provides that context
+- First sentence should directly describe the technical issue
+- Only add a second sentence if essential to reference key error details
 - Do NOT use markdown headers (##), bold text (**), or emojis in your response
 - Do NOT include section labels like "Visual Evidence:" or "Conclusion:"
-- Focus on error message interpretation and test context analysis
 """
         response = client.models.generate_content(
             model=settings.screenshot_model_name,
@@ -242,10 +237,11 @@ def create_jira_bug(
         if not settings.jira_create_enabled:
             return "JIRA issue creation is disabled (JIRA_CREATE_ENABLED=false). Skipping."
 
-        # Check for JIRA_PAT first
-        jira_pat = settings.jira_pat
-        if not jira_pat:
-            return "Error: JIRA_PAT environment variable is not set. Please configure your Jira Personal Access Token."
+        # Check for JIRA Cloud credentials
+        jira_email = settings.jira_user_email
+        jira_token = settings.jira_api_token
+        if not jira_email or not jira_token:
+            return "Error: JIRA_USER_EMAIL and JIRA_API_TOKEN environment variables must be set for Jira Cloud authentication."
 
         # Input validation
         if not summary or not summary.strip():
@@ -265,7 +261,7 @@ def create_jira_bug(
 
         jira_client = JIRA(
             server=settings.jira_server_url,
-            token_auth=jira_pat
+            basic_auth=(jira_email, jira_token)
         )
 
         # Build the initial issue dict with required fields
@@ -337,7 +333,7 @@ def create_jira_bug(
             except Exception as link_error:
                 link_info = f"\nWarning: Failed to attach prow link - {str(link_error)}"
         
-        ticket_url = f"https://issues.redhat.com/browse/{new_issue.key}"
+        ticket_url = f"{settings.jira_server_url.rstrip('/')}/browse/{new_issue.key}"
 
         # Build warning message if there were any update errors
         warnings = ""
@@ -351,11 +347,11 @@ def create_jira_bug(
 
         # Enhanced error handling for specific cases
         if "401" in error_msg or "Unauthorized" in error_msg:
-            return f"Authentication failed. Please check your JIRA_PAT environment variable: {error_msg}"
+            return f"Authentication failed. Please check your JIRA_USER_EMAIL and JIRA_API_TOKEN environment variables: {error_msg}"
         elif "403" in error_msg or "Forbidden" in error_msg:
-            return f"Permission denied. Check if you have permission to create issues in project 'RHDHBUGS': {error_msg}"
+            return f"Permission denied. Check if you have permission to create issues in project '{settings.jira_project_key}': {error_msg}"
         elif "404" in error_msg or "Not Found" in error_msg:
-            return f"Project 'RHDHBUGS' not found or Jira URL is incorrect: {error_msg}"
+            return f"Project '{settings.jira_project_key}' not found or Jira URL is incorrect: {error_msg}"
         elif "400" in error_msg:
             # Parse HTTP 400 errors for field validation issues
             if "Field" in error_msg and "cannot be set" in error_msg:
@@ -396,9 +392,14 @@ def update_jira_bug(
         if not settings.jira_update_enabled:
             return "JIRA issue updates are disabled (JIRA_UPDATE_ENABLED=false). Skipping."
 
+        jira_email = settings.jira_user_email
+        jira_token = settings.jira_api_token
+        if not jira_email or not jira_token:
+            return "Error: JIRA_USER_EMAIL and JIRA_API_TOKEN environment variables must be set for Jira Cloud authentication."
+
         jira_client = JIRA(
             server=settings.jira_server_url,
-            token_auth=settings.jira_pat
+            basic_auth=(jira_email, jira_token)
         )
 
         # Get the issue to verify it exists
@@ -454,7 +455,7 @@ def update_jira_bug(
             except Exception as link_error:
                 link_info = f"\nWarning: Failed to attach prow link - {str(link_error)}"
 
-        ticket_url = f"https://issues.redhat.com/browse/{ticket_key}"
+        ticket_url = f"{settings.jira_server_url.rstrip('/')}/browse/{ticket_key}"
         
         updated_fields = []
         if summary is not None:
@@ -470,7 +471,7 @@ def update_jira_bug(
         error_msg = str(e)
         
         if "401" in error_msg or "Unauthorized" in error_msg:
-            return f"Authentication failed. Please check your JIRA_PAT environment variable: {error_msg}"
+            return f"Authentication failed. Please check your JIRA_USER_EMAIL and JIRA_API_TOKEN environment variables: {error_msg}"
         elif "403" in error_msg or "Forbidden" in error_msg:
             return f"Permission denied. Check if you have permission to update issue '{ticket_key}': {error_msg}"
         elif "404" in error_msg or "Not Found" in error_msg:
