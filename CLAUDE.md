@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code when working with this repository.
 
 ## Project Overview
 
-TestTriage is an AI-powered Playwright test failure analysis agent. It analyzes test artifacts from Google Cloud Storage (prow/gcsweb links), performs root cause analysis using Gemini AI with visual screenshot analysis, and integrates with JIRA for bug tracking.
+AITestTriage is an AI-powered agent that analyzes Playwright/E2E test failures from OpenShift CI (Prow). It fetches artifacts from Google Cloud Storage, performs root cause analysis using Gemini AI (with visual screenshot analysis), searches for similar JIRA issues via ChromaDB, and optionally creates JIRA bugs.
 
 ## Commands
 
@@ -18,104 +18,80 @@ uv run python main.py cli
 # Run Slack bot
 uv run python main.py slack
 
-# Run JIRA sync to ChromaDB
+# Sync JIRA issues to ChromaDB
 uv run python jira_sync_to_chroma.py
 
-# Add a new dependency
+# Add a dependency
 uv add <package-name>
-
-# Update dependencies
-uv lock --upgrade
-uv sync
 
 # Build container image (linux/amd64 on Apple Silicon)
 podman build --platform linux/amd64 -t quay.io/skhileri/test-triage:latest .
 podman push quay.io/skhileri/test-triage:latest
 ```
 
-## Required Environment Variables
+## Environment Variables
 
-- `GOOGLE_API_KEY` — Google AI API key for Gemini model (required)
-- `JIRA_USER_EMAIL` — JIRA Cloud user email for authentication
-- `JIRA_API_TOKEN` — JIRA Cloud API token for authentication
-- `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` — For Slack bot mode
-- `CHROMA_DB_DIR` — ChromaDB persistence directory (default: `./chroma_db`, in prod: `/app/data/chroma_db`)
-- `EMBEDDING_MODEL` — Google embedding model (default: `gemini-embedding-001`)
-- `GEMINI_MODEL_NAME` — Gemini model for analysis (default: `gemini-3-pro-preview`)
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `GOOGLE_API_KEY` | Yes | — | Google AI API key for Gemini |
+| `JIRA_USER_EMAIL` | For JIRA | — | JIRA Cloud user email |
+| `JIRA_API_TOKEN` | For JIRA | — | JIRA Cloud API token |
+| `SLACK_BOT_TOKEN` | For Slack | — | Slack bot OAuth token |
+| `SLACK_SIGNING_SECRET` | For Slack | — | Slack app signing secret |
+| `GEMINI_MODEL_NAME` | No | `gemini-2.5-pro` | Gemini model for analysis |
+| `EMBEDDING_MODEL` | No | `gemini-embedding-001` | Google embedding model |
+| `CHROMA_DB_DIR` | No | `./chroma_db` | ChromaDB persistence directory |
 
 ## Architecture
 
 ### LangGraph Agent Workflow
 
-The system uses LangGraph to orchestrate an agent workflow defined in `agents/nodes.py`:
-
 ```
 User Input → test_triage node → (conditional) → tools node → test_triage → ... → END
 ```
 
-- **test_triage node**: Main LLM call using Gemini with bound tools
-- **tools node**: Executes tool calls (ToolNode from langgraph.prebuilt)
-- **Routing**: `should_continue()` checks for `tool_calls` to determine next step
+- **test_triage node**: Main Gemini LLM call with bound tools (`agents/nodes.py`)
+- **tools node**: `ToolNode` executes tool calls; errors are returned as strings, never raised
+- **Routing**: `should_continue()` checks for `tool_calls` on the last message
+- **Retry**: Exponential backoff on Gemini 429 errors (5s start, 2× factor, 60s max, 5 attempts)
 
 ### Key Data Flow
 
-1. CLI/Slack extracts `base_dir` from prow/gcsweb URLs using regex patterns
-2. `E2ETestAnalysisBuilder` in `prompt_builder/test_analysis.py` constructs a strategic analysis prompt by:
-   - Discovering e2e job directories and project directories in GCS
-   - Providing an artifact map (build log path, project paths)
-   - Giving the agent an analysis strategy — the agent decides what to investigate
-3. The agent autonomously explores artifacts using tools, always reading the build log first
-4. Conversation history is maintained (in-memory for CLI, pickle files for Slack)
-
-### Tool Implementation Pattern
-
-Tools are defined in `tools/test_analysis_tools.py` using the `@tool` decorator from `langchain_core.tools`. All tools that access test artifacts use `storage_client` (from `utils/storage.py`) which wraps GCS anonymous client access.
-
-Key tools:
-- `parse_junit_failures` — Parses JUnit XML for test failures
-- `analyze_screenshot` — Sends failure screenshot + context to Gemini for visual root cause analysis
-- `read_file` — Reads a file from GCS
-- `read_log_files` — Reads all log files from a GCS directory
-- `list_directories` / `list_files` / `file_exists` — GCS directory navigation
-- `search_similar_jira_issues` — ChromaDB semantic search using Google embeddings
-- `create_jira_bug` / `update_jira_bug` — JIRA API integration
+1. CLI/Slack extracts `base_dir` from prow/gcsweb URLs (`utils/url_parser.py`)
+2. `E2ETestAnalysisBuilder` (`prompt_builder/test_analysis.py`) discovers GCS artifact layout and builds a strategic prompt — two paths:
+   - **Step registry failure**: CI never reached tests — analyze build logs only
+   - **Test execution failure**: Full path — JUnit → screenshots → pod logs → JIRA search
+3. Agent calls tools in a loop, always reading the main build log first
+4. Conversation history: in-memory for CLI, per-thread JSON files for Slack
 
 ### Adding New Tools
 
-1. Add function with `@tool` decorator in `tools/test_analysis_tools.py`
+1. Add `@tool` decorated function in `tools/test_analysis_tools.py`
 2. Append to the `TOOLS` list at the bottom of that file
-3. Tools are automatically bound to the model via `model.bind_tools(TOOLS)` in `agents/nodes.py`
+3. Tools are auto-bound via `model.bind_tools(TOOLS)` in `agents/nodes.py`
 
-### Gemini Response Handling
-
-Gemini models return `AIMessage.content` as a list of dicts (`{"type": "text", "text": "...", "extras": {...}}`) instead of a plain string. Both interfaces extract only the `text` parts — see the `isinstance(content, list)` blocks in `interfaces/cli.py` and `interfaces/slack_bot.py`.
+Key tools:
+- `parse_junit_failures` — Parses JUnit XML, strips system-out noise
+- `analyze_screenshot` — Vision model RCA (1-2 sentence output)
+- `read_file` / `read_log_files` / `list_directories` / `list_files` / `file_exists` — GCS navigation
+- `search_similar_jira_issues` — ChromaDB cosine similarity with open-issue boost
+- `create_jira_bug` / `update_jira_bug` — JIRA Cloud API (basic auth)
 
 ### GCS Path Convention
 
-All artifact paths are relative to the `test-platform-results` bucket. The `base_dir` extracted from URLs follows the pattern:
+All artifact paths are relative to the `test-platform-results` bucket:
 - `logs/<job-name>/<job-id>` (periodic jobs)
 - `pr-logs/pull/<repo>/<pr>/<job-name>/<job-id>` (PR jobs)
 
+### Gemini Response Format
+
+Gemini returns `AIMessage.content` as a list of dicts (`{"type": "text", "text": "...", "extras": {...}}`). Both interfaces filter for `text` blocks — see the `isinstance(content, list)` blocks in `interfaces/cli.py` and `interfaces/slack_bot.py`.
+
 ## ChromaDB for JIRA Search
 
-The `search_similar_jira_issues` tool uses ChromaDB with Google's `gemini-embedding-001` model (3072 dimensions). The collection `jira_issues` stores RHDHBUGS issues.
+`search_similar_jira_issues` uses ChromaDB with `gemini-embedding-001` (3072 dimensions). The `jira_issues` collection stores RHDHBUGS issues populated by `jira_sync_to_chroma.py`.
 
-- **Sync script**: `jira_sync_to_chroma.py` populates/updates the database
-- **Startup sync**: `entrypoint.sh` runs the sync before starting the Slack bot
-- **Periodic sync**: A Kubernetes CronJob (`jira-sync`) runs the sync daily at midnight UTC
-- **Persistence**: ChromaDB is stored on the PVC at `/app/data/chroma_db` in production
-
-If the embedding model changes, delete the existing ChromaDB and re-sync:
+If the embedding model changes, delete and re-sync:
 ```bash
 rm -rf ./chroma_db && uv run python jira_sync_to_chroma.py
 ```
-
-## Infrastructure
-
-Deployment manifests live in a separate repo (`test-triage-infra`):
-- `manifests/test-triage/base/` — Deployment, PVC, Service, Route, ConfigMap, ImageStream
-- `manifests/test-triage/cronjobs/` — JIRA sync CronJob (midnight UTC daily)
-- `manifests/test-triage/overlays/prod/` — Production secrets, combines base + cronjobs
-- Namespace: `rhdh-sidekick--runtime-ext`
-- PVC: 5Gi RWO (aws-ebs) mounted at `/app/data`
-- Strategy: `Recreate` (required for RWO PVC)
