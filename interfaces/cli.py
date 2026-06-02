@@ -1,20 +1,23 @@
 import os
+import logging
 from typing import List
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
-import re
 
-from agents.nodes import create_agent_graph, save_graph_visualization
+from agents.nodes import agent
 from prompt_builder.test_analysis import get_e2e_test_analysis_prompt
+from utils.url_parser import extract_base_dir
+from config.settings import settings
+
+# Suppress noisy HTTP request and SDK logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("google_genai").setLevel(logging.WARNING)
 
 class CLIInterface:
     """Command Line Interface for the test analysis agent."""
     
     def __init__(self):
-        self.app = create_agent_graph()
+        self.app = agent
         self.conversation_history: List[BaseMessage] = []
-        
-        # Save graph visualization
-        save_graph_visualization(self.app)
     
     def start_conversation(self):
         """Start an interactive conversation with the agent."""
@@ -26,21 +29,8 @@ class CLIInterface:
                 if is_first_turn:
                     user_link = input("Enter the prow or gcsweb link: ")
 
-                    # Pattern for prow URLs
-                    prow_pattern = r'https://prow\.ci\.openshift\.org/view/gs/test-platform-results/((?:logs|pr-logs)/[^|>\s/]+(?:/[^|>\s/]+)*)'
-                    # Pattern for gcsweb URLs - extract base_dir up to job ID
-                    gcsweb_pattern = r'https://gcsweb-ci\.apps\.ci\.l2s4\.p1\.openshiftapps\.com/gcs/test-platform-results/((?:logs|pr-logs)(?:/[^/\s|>]+)*/\d+)'
-
-                    prow_match = re.search(prow_pattern, user_link)
-                    gcsweb_match = re.search(gcsweb_pattern, user_link)
-
-                    if prow_match:
-                        base_dir = prow_match.group(1)
-                    elif gcsweb_match:
-                        base_dir = gcsweb_match.group(1)
-                        prow_link = f"https://prow.ci.openshift.org/view/gs/test-platform-results/{base_dir}"
-                        print(f"Constructed prow link: {prow_link}")
-                    else:
+                    base_dir = extract_base_dir(user_link)
+                    if base_dir is None:
                         print("No valid prow or gcsweb link found")
                         return
                     user_input_text = get_e2e_test_analysis_prompt(
@@ -61,26 +51,49 @@ class CLIInterface:
                 self.conversation_history.append(current_user_message)
                 
                 inputs = {"messages": self.conversation_history}
-                
+
                 print("\nAI: ", end="", flush=True)
-                
+
                 full_response_content = ""
                 tool_calls_made = []
+                # Track how many messages existed before this turn so we only
+                # process new messages and don't re-display old responses.
+                prev_message_count = len(self.conversation_history)
+                last_seen_count = prev_message_count
 
                 # Stream the response
-                for event in self.app.stream(inputs, stream_mode="values",config={"recursion_limit": 50}):
+                for event in self.app.stream(inputs, stream_mode="values", config={"recursion_limit": settings.recursion_limit}):
                     messages_from_event = event["messages"]
-                    latest_message = messages_from_event[-1]
 
-                    if isinstance(latest_message, AIMessage):
-                        if latest_message.content:
-                            if isinstance(latest_message.content, str) and latest_message.content not in full_response_content:
-                                new_content = latest_message.content.replace(full_response_content, "", 1)
-                                print(new_content, end="", flush=True)
-                                full_response_content += new_content
+                    # Only process messages added since the last event
+                    new_messages = messages_from_event[last_seen_count:]
+                    last_seen_count = len(messages_from_event)
 
-                        if latest_message.tool_calls:
-                            tool_calls_made = latest_message.tool_calls
+                    for msg in new_messages:
+                        if isinstance(msg, AIMessage):
+                            if msg.tool_calls:
+                                tool_calls_made = msg.tool_calls
+                                for tc in msg.tool_calls:
+                                    print(f"\n  → Calling {tc['name']}...", flush=True)
+
+                            if msg.content:
+                                # Gemini models may return content as a list of dicts with 'type', 'text',
+                                # and 'extras' (containing signature blobs). Extract only the text parts.
+                                if isinstance(msg.content, list):
+                                    text_content = "\n".join(
+                                        block["text"] for block in msg.content
+                                        if isinstance(block, dict) and block.get("type") == "text"
+                                    )
+                                else:
+                                    text_content = msg.content
+                                if text_content and text_content not in full_response_content:
+                                    new_content = text_content.replace(full_response_content, "", 1)
+                                    print(new_content, end="", flush=True)
+                                    full_response_content += new_content
+
+                        elif isinstance(msg, ToolMessage):
+                            tool_name = getattr(msg, 'name', None) or 'tool'
+                            print(f"  ✓ {tool_name}", flush=True)
 
                     # Update conversation history
                     self.conversation_history = messages_from_event
@@ -112,7 +125,16 @@ class CLIInterface:
                 for i, msg in enumerate(self.conversation_history):
                     f.write(f"--- Message {i}: {type(msg).__name__} ---\n")
                     if hasattr(msg, 'content') and msg.content is not None:
-                        f.write(f"Content: {msg.content}\n")
+                        # Gemini models may return content as a list of dicts with 'type', 'text',
+                        # and 'extras' (containing signature blobs). Extract only the text parts.
+                        if isinstance(msg.content, list):
+                            text_content = "\n".join(
+                                block["text"] for block in msg.content
+                                if isinstance(block, dict) and block.get("type") == "text"
+                            )
+                        else:
+                            text_content = msg.content
+                        f.write(f"Content: {text_content}\n")
                     
                     if isinstance(msg, AIMessage) and msg.tool_calls:
                         f.write(f"Tool Calls: {msg.tool_calls}\n")

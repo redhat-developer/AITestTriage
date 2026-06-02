@@ -3,7 +3,8 @@ Script to sync Jira issues from RHDHBUGS project to ChromaDB for semantic simila
 Run this script periodically (e.g., via cron job every 6 hours) to keep the vector DB updated.
 
 Environment Variables:
-    JIRA_PAT: Jira Personal Access Token (required)
+    JIRA_USER_EMAIL: Jira Cloud user email (required)
+    JIRA_API_TOKEN: Jira Cloud API token (required)
     GOOGLE_API_KEY: Google API key for embedding model (required)
     CHROMA_DB_DIR: ChromaDB persistence directory (optional, defaults to ./chroma_db)
 """
@@ -14,7 +15,7 @@ from typing import List, Dict
 from jira import JIRA
 import chromadb
 from chromadb.config import Settings
-import google.generativeai as genai
+from google import genai
 import argparse
 import json
 import re
@@ -23,33 +24,40 @@ from config.settings import settings
 
 class JiraChromaSync:
     def __init__(self,
-                 jira_server: str = "https://issues.redhat.com/",
+                 jira_server: str = None,
+                 jira_email: str = None,
                  jira_token: str = None,
-                 chroma_persist_directory: str = settings.chroma_db_dir,
-                 embedding_model: str = "models/text-embedding-004"):
+                 chroma_persist_directory: str = None,
+                 embedding_model: str = None):
         """
         Initialize Jira to ChromaDB sync.
 
         Args:
             jira_server: Jira server URL
-            jira_token: Jira PAT token
+            jira_email: Jira Cloud user email
+            jira_token: Jira Cloud API token
             chroma_persist_directory: Directory to persist ChromaDB
             embedding_model: Google embedding model name
         """
-        self.jira_token = jira_token or os.getenv("JIRA_PAT")
-        if not self.jira_token:
-            raise ValueError("JIRA_PAT environment variable not set")
+        self.jira_email = jira_email or settings.jira_user_email or os.getenv("JIRA_USER_EMAIL")
+        self.jira_token = jira_token or settings.jira_api_token or os.getenv("JIRA_API_TOKEN")
+        if not self.jira_email or not self.jira_token:
+            raise ValueError("JIRA_USER_EMAIL and JIRA_API_TOKEN environment variables must be set")
 
-        # Initialize Google API
+        jira_server = jira_server or settings.jira_server_url
+        chroma_persist_directory = chroma_persist_directory or settings.chroma_db_dir
+        embedding_model = embedding_model or settings.embedding_model
+
+        # Initialize Google GenAI client
         google_api_key = os.getenv("GOOGLE_API_KEY")
         if not google_api_key:
             raise ValueError("GOOGLE_API_KEY environment variable not set")
-        genai.configure(api_key=google_api_key)
+        self.genai_client = genai.Client(api_key=google_api_key)
 
-        # Initialize Jira client
+        # Initialize Jira client (Atlassian Cloud basic auth)
         self.jira_client = JIRA(
             server=jira_server,
-            token_auth=self.jira_token
+            basic_auth=(self.jira_email, self.jira_token)
         )
 
         # Initialize ChromaDB client with persistence
@@ -68,18 +76,13 @@ class JiraChromaSync:
             metadata={"description": "RHDHBUGS Jira issues for semantic similarity search"}
         )
         
-    def fetch_jira_issues(self, 
-                         project_key: str = "RHDHBUGS",
-                         max_results: int = 1000,
-                         start_at: int = 0) -> List[Dict]:
+    def fetch_jira_issues(self, project_key: str = "RHDHBUGS") -> List[Dict]:
         """
-        Fetch issues from Jira project.
-        
+        Fetch all issues from Jira project.
+
         Args:
             project_key: Jira project key
-            max_results: Maximum number of results per query
-            start_at: Start index for pagination
-            
+
         Returns:
             List of issue dictionaries
         """
@@ -90,32 +93,21 @@ class JiraChromaSync:
         jql_query = f"project = {project_key} ORDER BY updated DESC"
         
         all_issues = []
-        
+
         try:
-            # Paginate through all results
-            while True:
-                issues = self.jira_client.search_issues(
-                    jql_query,
-                    startAt=start_at,
-                    maxResults=max_results,
-                    fields='key,summary,description,status,issuetype,created,updated,labels,components,resolution,priority'
-                )
-                
-                if not issues:
-                    break
-                
-                print(f"Fetched {len(issues)} issues (offset: {start_at})")
-                
-                for issue in issues:
-                    issue_data = self._extract_issue_data(issue)
-                    all_issues.append(issue_data)
-                
-                # Check if we've fetched all issues
-                if len(issues) < max_results:
-                    break
-                    
-                start_at += max_results
-            
+            # maxResults=0 tells the jira library to auto-paginate and fetch all issues
+            issues = self.jira_client.search_issues(
+                jql_query,
+                maxResults=0,
+                fields='key,summary,description,status,issuetype,created,updated,labels,components,resolution,priority'
+            )
+
+            print(f"Fetched {len(issues)} issues")
+
+            for issue in issues:
+                issue_data = self._extract_issue_data(issue)
+                all_issues.append(issue_data)
+
             print(f"Total issues fetched: {len(all_issues)}")
             return all_issues
             
@@ -208,7 +200,7 @@ class JiraChromaSync:
             "components": components,
             "resolution": resolution,
             "priority": priority,
-            "url": f"https://issues.redhat.com/browse/{issue.key}"
+            "url": f"{settings.jira_server_url.rstrip('/')}/browse/{issue.key}"
         }
         
         return data
@@ -278,12 +270,11 @@ class JiraChromaSync:
             
             # Generate embeddings using Google's API (batch request)
             print(f"Generating embeddings for batch {i//batch_size + 1}...")
-            result = genai.embed_content(
+            result = self.genai_client.models.embed_content(
                 model=self.embedding_model_name,
-                content=documents,
-                task_type="retrieval_document"
+                contents=documents,
             )
-            embeddings = result['embedding']
+            embeddings = [e.values for e in result.embeddings]
 
             # Upsert to ChromaDB (updates if exists, inserts if new)
             self.collection.upsert(
@@ -311,24 +302,18 @@ def main():
     parser = argparse.ArgumentParser(description="Sync Jira issues to ChromaDB")
     parser.add_argument(
         "--project",
-        default="RHDHBUGS",
-        help="Jira project key (default: RHDHBUGS)"
+        default=settings.jira_project_key,
+        help=f"Jira project key (default: {settings.jira_project_key})"
     )
     parser.add_argument(
         "--chroma-dir",
         default=settings.chroma_db_dir,
-        help="ChromaDB persistence directory (default: ./chroma_db)"
-    )
-    parser.add_argument(
-        "--max-results",
-        type=int,
-        default=1000,
-        help="Maximum results per Jira query (default: 1000)"
+        help=f"ChromaDB persistence directory (default: {settings.chroma_db_dir})"
     )
     parser.add_argument(
         "--embedding-model",
-        default="models/text-embedding-004",
-        help="Google embedding model (default: models/text-embedding-004)"
+        default=settings.embedding_model,
+        help=f"Google embedding model (default: {settings.embedding_model})"
     )
     
     args = parser.parse_args()
@@ -341,10 +326,7 @@ def main():
         )
         
         # Fetch issues from Jira
-        issues = syncer.fetch_jira_issues(
-            project_key=args.project,
-            max_results=args.max_results
-        )
+        issues = syncer.fetch_jira_issues(project_key=args.project)
         
         # Sync to ChromaDB
         syncer.sync_to_chromadb(issues)

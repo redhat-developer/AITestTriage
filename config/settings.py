@@ -1,51 +1,71 @@
-import os
 import getpass
+import os
 from typing import Optional
 
-class Settings:
+from pydantic import model_validator
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
     """Configuration settings for the test analysis agent."""
-    
-    # Model configurations
-    # GEMINI_MODEL_NAME: str = "gemini-2.0-flash"
-    GEMINI_MODEL_NAME: str = "gemini-2.5-pro"
 
-    
+    # Models
+    gemini_model_name: str = "gemini-2.5-pro"
+    screenshot_model_name: Optional[str] = "gemini-2.5-pro"
+    embedding_model: str = "gemini-embedding-001"
+
+    # LLM
+    llm_temperature: float = 0.3
+    recursion_limit: int = 100
+
     # Google Cloud Storage
-    GCS_BUCKET_NAME: str = "test-platform-results"
-    
-    # API Keys
-    @property
-    def google_api_key(self) -> str:
-        """Get Google API key from environment or prompt user."""
-        if "GOOGLE_API_KEY" not in os.environ:
-            os.environ["GOOGLE_API_KEY"] = getpass.getpass("Enter your Google AI API key: ")
-        return os.environ["GOOGLE_API_KEY"]
-    
-    # Slack configuration
-    @property
-    def slack_bot_token(self) -> Optional[str]:
-        """Get Slack bot token from environment."""
-        return os.environ.get('SLACK_BOT_TOKEN')
-    
-    @property
-    def slack_signing_secret(self) -> Optional[str]:
-        """Get Slack signing secret from environment."""
-        return os.environ.get('SLACK_SIGNING_SECRET')
-    
-    @property
-    def slack_app_token(self) -> Optional[str]:
-        """Get Slack app token from environment."""
-        return os.environ.get("SLACK_APP_TOKEN")
-    
-    @property
-    def port(self) -> int:
-        """Get port for HTTP mode."""
-        return int(os.environ.get('PORT', 3000))
+    gcs_bucket_name: str = "test-platform-results"
 
-    @property
-    def chroma_db_dir(self) -> str:
-        """Get ChromaDB directory from environment."""
-        return os.environ.get("CHROMA_DB_DIR", "./chroma_db")
+    # JIRA (Atlassian Cloud)
+    jira_server_url: str = "https://redhat.atlassian.net"
+    jira_project_key: str = "RHDHBUGS"
+    jira_affects_version: str = "1.9.0"
+    jira_labels: str = "ci-fail,AITestTriage"
+    jira_create_enabled: bool = True
+    jira_update_enabled: bool = False
+    jira_user_email: Optional[str] = None
+    jira_api_token: Optional[str] = None
+
+    # API Keys
+    google_api_key: Optional[str] = None
+
+    # Slack
+    slack_bot_token: Optional[str] = None
+    slack_signing_secret: Optional[str] = None
+    slack_app_token: Optional[str] = None
+
+    # Server
+    port: int = 3000
+
+    # Storage
+    chroma_db_dir: str = "./chroma_db"
+    conversation_data_dir: str = ""
+
+    model_config = {
+        "populate_by_name": True,
+    }
+
+    @model_validator(mode="after")
+    def _resolve_defaults(self):
+        # screenshot_model_name falls back to gemini_model_name
+        if self.screenshot_model_name is None:
+            self.screenshot_model_name = self.gemini_model_name
+
+        # Prompt for Google API key in CLI mode if not set
+        if not self.google_api_key:
+            if os.environ.get("GOOGLE_API_KEY"):
+                self.google_api_key = os.environ["GOOGLE_API_KEY"]
+            else:
+                self.google_api_key = getpass.getpass("Enter your Google AI API key: ")
+                os.environ["GOOGLE_API_KEY"] = self.google_api_key
+
+        return self
+
 
 # Global settings instance
-settings = Settings() 
+settings = Settings()
