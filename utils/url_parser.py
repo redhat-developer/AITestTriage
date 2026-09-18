@@ -8,13 +8,13 @@ logger = logging.getLogger(__name__)
 
 # Pattern for prow URLs
 _PROW_PATTERN = re.compile(
-    r'https://prow\.ci\.openshift\.org/view/gs/test-platform-results/'
+    r'https://prow\.ci\.openshift\.org/view/gs/test-platform-results-public/'
     r'((?:logs|pr-logs)/[^|>\s/]+(?:/[^|>\s/]+)*)'
 )
 
 # Pattern for gcsweb URLs - extract base_dir up to job ID
 _GCSWEB_PATTERN = re.compile(
-    r'https://gcsweb-ci\.apps\.ci\.l2s4\.p1\.openshiftapps\.com/gcs/test-platform-results/'
+    r'https://gcsweb-ci\.apps\.ci\.l2s4\.p1\.openshiftapps\.com/gcs/test-platform-results-public/'
     r'((?:logs|pr-logs)(?:/[^/\s|>]+)*/\d+)'
 )
 
@@ -35,7 +35,7 @@ def extract_base_dir(text: str) -> Optional[str]:
     gcsweb_match = _GCSWEB_PATTERN.search(text)
     if gcsweb_match:
         base_dir = gcsweb_match.group(1)
-        logger.info(f"Constructed prow link from gcsweb: https://prow.ci.openshift.org/view/gs/test-platform-results/{base_dir}")
+        logger.info(f"Constructed prow link from gcsweb: https://prow.ci.openshift.org/view/gs/test-platform-results-public/{base_dir}")
         return base_dir
 
     return None
