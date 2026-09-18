@@ -80,7 +80,7 @@ Key tools:
 
 ### GCS Path Convention
 
-All artifact paths are relative to the `test-platform-results-public` bucket:
+All artifact paths are relative to the configured `GCS_BUCKET_NAME` bucket:
 - `logs/<job-name>/<job-id>` (periodic jobs)
 - `pr-logs/pull/<repo>/<pr>/<job-name>/<job-id>` (PR jobs)
 
