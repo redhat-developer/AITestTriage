@@ -1,5 +1,6 @@
 from typing import List, Optional
 from utils.storage import storage_client
+from utils.url_parser import build_prow_url
 from config.settings import settings
 
 
@@ -84,7 +85,7 @@ class E2ETestAnalysisBuilder:
                 step_log_paths.append(f"  - {step_dir}: {log_path}")
 
         step_list = "\n".join(step_log_paths) if step_log_paths else "  (no build logs found)"
-        prow_link = f"https://prow.ci.openshift.org/view/gs/test-platform-results-public/{self.base_dir}"
+        prow_link = build_prow_url(self.base_dir)
 
         return f"""You are an AI expert analyzing OpenShift CI job failures.
 
@@ -113,7 +114,7 @@ Start your analysis."""
                                project_dirs: List[str], build_log_path: str) -> str:
         """Build the strategic analysis prompt."""
         artifacts_base = f"{self.base_dir}/artifacts/{e2e_job_dir}/{e2e_step_registry_dir}/artifacts"
-        prow_link = f"https://prow.ci.openshift.org/view/gs/test-platform-results-public/{self.base_dir}"
+        prow_link = build_prow_url(self.base_dir)
 
         project_entries = []
         for d in project_dirs:
@@ -127,7 +128,7 @@ Prow link: {prow_link}
 
 ## Artifact Layout
 
-All paths are in GCS bucket `test-platform-results-public`.
+All paths are in GCS bucket `{settings.gcs_bucket_name}`.
 
 Build log: `{build_log_path}`
 
