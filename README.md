@@ -27,6 +27,7 @@ uv run python main.py cli
 | `SLACK_BOT_TOKEN` | For Slack | — | Slack bot OAuth token |
 | `SLACK_SIGNING_SECRET` | For Slack | — | Slack app signing secret |
 | `GEMINI_MODEL_NAME` | No | `gemini-2.5-pro` | Gemini model for analysis |
+| `GCS_BUCKET_NAME` | No | `test-platform-results-public` | GCS bucket containing CI artifacts |
 | `EMBEDDING_MODEL` | No | `gemini-embedding-001` | Embedding model for JIRA search |
 | `CHROMA_DB_DIR` | No | `./chroma_db` | ChromaDB persistence directory |
 
