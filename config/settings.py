@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     recursion_limit: int = 100
 
     # Google Cloud Storage
-    gcs_bucket_name: str = "test-platform-results"
+    gcs_bucket_name: str = "test-platform-results-public"
 
     # JIRA (Atlassian Cloud)
     jira_server_url: str = "https://redhat.atlassian.net"
